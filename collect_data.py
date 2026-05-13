@@ -8,12 +8,14 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- KONFIGURASI PATH ---
-model_path = r'D:\PPTI\Cawu 5\Cawu 5 Gwe\RM\rm-drowsiness-detection\face_landmarker.task'
+model_path = 'face_landmarker.task'
 
 # --- PARAMETER KALIBRASI ---
 CALIBRATION_TIME = 10     
 is_waiting_to_start = True 
 is_calibrating = False    
+is_waiting_for_mode = False
+is_recording = False
 calibration_data = []     
 calibration_start_time = 0
 start_record_time = 0     # Variabel untuk mencatat detik berjalan (Elapsed Time)
@@ -137,14 +139,19 @@ with vision.FaceLandmarker.create_from_options(options) as landmarker:
                     cv2.putText(frame, f"KALIBRASI... Tahan wajah {rem} dtk", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                     if elapsed >= CALIBRATION_TIME:
                         is_calibrating = False
-                        start_record_time = time.time() # Mulai stopwatch
+                        is_waiting_for_mode = True # Tunggu mode dipilih sebelum merekam
                         if calibration_data:
                             calibration_data.sort(reverse=True)
                             personal_avg_ear = np.mean(calibration_data[:len(calibration_data)//2])
                             EAR_THRESHOLD_TEMP = personal_avg_ear * 0.75
                             print(f"Kalibrasi OK! Rata-rata EAR: {personal_avg_ear:.3f}")
 
-                else:
+                elif is_waiting_for_mode:
+                    cv2.putText(frame, "KALIBRASI SELESAI!", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                    cv2.putText(frame, "Tekan '1' (Ngantuk) atau '0' (Sadar)", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                    cv2.putText(frame, "untuk mulai merekam ke CSV", (20, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+                elif is_recording:
                     mar_value = calculate_mar(landmarks)
                     head_pitch = get_head_pitch_ratio(landmarks)
                     head_yaw = get_head_yaw_diff(landmarks)
@@ -205,8 +212,18 @@ with vision.FaceLandmarker.create_from_options(options) as landmarker:
             is_waiting_to_start = False
             is_calibrating = True
             calibration_start_time = time.time()
-        elif key == ord('0'): current_label = 0
-        elif key == ord('1'): current_label = 1
+        elif key == ord('0'): 
+            current_label = 0
+            if is_waiting_for_mode:
+                is_waiting_for_mode = False
+                is_recording = True
+                start_record_time = time.time()
+        elif key == ord('1'): 
+            current_label = 1
+            if is_waiting_for_mode:
+                is_waiting_for_mode = False
+                is_recording = True
+                start_record_time = time.time()
 
 cap.release()
 cv2.destroyAllWindows()
