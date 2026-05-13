@@ -8,7 +8,7 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 
 # --- KONFIGURASI PATH ---
-model_path = r'c:\Users\evang\Documents\Cawu 5 Research Metheodology\Project RM\face_landmarker.task'
+model_path = r'D:\PPTI\Cawu 5\Cawu 5 Gwe\RM\rm-drowsiness-detection\face_landmarker.task'
 
 # --- PARAMETER KALIBRASI ---
 CALIBRATION_TIME = 10     
@@ -16,13 +16,14 @@ is_waiting_to_start = True
 is_calibrating = False    
 calibration_data = []     
 calibration_start_time = 0
+start_record_time = 0     # Variabel untuk mencatat detik berjalan (Elapsed Time)
 personal_avg_ear = 0.25   
 current_label = 0         
 
 # --- BUFFER PERCLOS ---
 PERCLOS_WINDOW = 300      
 perclos_buffer = []       
-EAR_THRESHOLD_TEMP = 0.20 # Akan diupdate setelah kalibrasi
+EAR_THRESHOLD_TEMP = 0.20 
 
 # --- STATISTIK LOGGING ---
 data_terkumpul = 0
@@ -71,15 +72,29 @@ options = vision.FaceLandmarkerOptions(
 
 cap = cv2.VideoCapture(0)
 
-# --- SETUP DATA LOGGER ---
-subjek_nama = input("Masukkan Nama/Kode Subjek (misal: Budi_Gelap): ")
+# --- SETUP DATA LOGGER (DENGAN BIOLOGICAL CLOCK) ---
+subjek_nama = input("Masukkan Nama/Kode Subjek (misal: Abel_NoKacamata_GelapNgantuk): ")
+
+# Minta input Habitual Bedtime untuk justifikasi sirkadian
+hbt_input = input("Masukkan Habitual Bedtime / Waktu Tidur Biasa subjek (format HH:MM, misal 23:30): ")
+try:
+    hbt_time = datetime.strptime(hbt_input, "%H:%M").time()
+except ValueError:
+    print("Format waktu salah! Menggunakan default 23:00")
+    hbt_time = datetime.strptime("23:00", "%H:%M").time()
+
 session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
 csv_filename = f"dataset_{subjek_nama}_{session_id}.csv"
 
+# Header CSV diperbarui untuk memasukkan metrik sirkadian dan waktu berjalan
 with open(csv_filename, mode='w', newline='') as file:
     writer = csv.writer(file)
-    writer.writerow(['Waktu', 'EAR_Aktual', 'Norm_EAR', 'MAR_Aktual', 'PERCLOS', 'Head_Pitch_Ratio', 'Head_Yaw_Diff', 'Intensitas_Cahaya', 'Adaptive_CLAHE_Aktif', 'Label'])
-print(f"Data Logger Aktif! Menyimpan ke {csv_filename}")
+    writer.writerow([
+        'Elapsed_Time', 'Jam_Rekaman', 'Habitual_Bedtime', 'Menit_Menuju_HBT', 
+        'EAR_Aktual', 'Norm_EAR', 'MAR_Aktual', 'PERCLOS', 'Head_Pitch_Ratio', 
+        'Head_Yaw_Diff', 'Intensitas_Cahaya', 'Adaptive_CLAHE_Aktif', 'Label'
+    ])
+print(f"Data Logger Aktif! Habitual Bedtime dicatat pada {hbt_time.strftime('%H:%M')}. Menyimpan ke {csv_filename}")
 
 with vision.FaceLandmarker.create_from_options(options) as landmarker:
     while cap.isOpened():
@@ -122,6 +137,7 @@ with vision.FaceLandmarker.create_from_options(options) as landmarker:
                     cv2.putText(frame, f"KALIBRASI... Tahan wajah {rem} dtk", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
                     if elapsed >= CALIBRATION_TIME:
                         is_calibrating = False
+                        start_record_time = time.time() # Mulai stopwatch
                         if calibration_data:
                             calibration_data.sort(reverse=True)
                             personal_avg_ear = np.mean(calibration_data[:len(calibration_data)//2])
@@ -129,36 +145,55 @@ with vision.FaceLandmarker.create_from_options(options) as landmarker:
                             print(f"Kalibrasi OK! Rata-rata EAR: {personal_avg_ear:.3f}")
 
                 else:
-                    # Menghitung Fitur
                     mar_value = calculate_mar(landmarks)
                     head_pitch = get_head_pitch_ratio(landmarks)
                     head_yaw = get_head_yaw_diff(landmarks)
                     norm_ear = ear_value / personal_avg_ear if personal_avg_ear > 0 else 1.0
                     
-                    # Update PERCLOS
                     perclos_buffer.append(1 if ear_value < EAR_THRESHOLD_TEMP else 0)
                     if len(perclos_buffer) > PERCLOS_WINDOW: perclos_buffer.pop(0)
                     current_perclos = sum(perclos_buffer) / len(perclos_buffer) if len(perclos_buffer) > 0 else 0
                     
+                    # LOGIKA WAKTU
+                    now = datetime.now()
+                    current_time_str = now.strftime("%H:%M:%S.%f")[:-3]
+                    elapsed_record = time.time() - start_record_time
+                    
+                    # Kalkulasi Jarak Waktu Sirkadian (Menit menuju waktu tidur)
+                    hbt_mins = hbt_time.hour * 60 + hbt_time.minute
+                    now_mins = now.hour * 60 + now.minute
+                    diff_mins = hbt_mins - now_mins
+                    
+                    # Mengakali beda hari (misal jam tidur 01:00 pagi, tapi sekarang masih 23:00 malam)
+                    if diff_mins < -720:
+                        diff_mins += 1440
+                    elif diff_mins > 720:
+                        diff_mins -= 1440
+                    # Jika positif = Menuju HBT. Jika negatif = Telah melewati HBT.
+                    
                     # Simpan ke CSV
                     with open(csv_filename, mode='a', newline='') as file:
                         writer = csv.writer(file)
-                        current_time = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-                        writer.writerow([current_time, round(ear_value,4), round(norm_ear,4), round(mar_value,4), 
-                                         round(current_perclos,4), round(head_pitch,4), round(head_yaw,4), 
-                                         round(avg_brightness,2), 1 if is_low_light else 0, current_label])
+                        writer.writerow([
+                            round(elapsed_record, 2), current_time_str, hbt_time.strftime("%H:%M"), diff_mins, 
+                            round(ear_value,4), round(norm_ear,4), round(mar_value,4), 
+                            round(current_perclos,4), round(head_pitch,4), round(head_yaw,4), 
+                            round(avg_brightness,2), 1 if is_low_light else 0, current_label
+                        ])
                     data_terkumpul += 1
                     
-                    # TAMPILAN DASHBOARD PEREKAMAN
+                    # VISUALISASI
                     if current_label == 1:
-                        bg_color, text_str = (0, 0, 255), "SEDANG MEREKAM: NGANTUK (1)"
+                        bg_color, text_str = (0, 0, 255), "MEREKAM NGANTUK (1)"
                     else:
-                        bg_color, text_str = (0, 200, 0), "SEDANG MEREKAM: SADAR (0)"
+                        bg_color, text_str = (0, 200, 0), "MEREKAM SADAR (0)"
                         
                     cv2.rectangle(frame, (0, 0), (640, 40), bg_color, -1)
                     cv2.putText(frame, text_str, (10, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
                     
-                    cv2.putText(frame, f"Total Data Tersimpan: {data_terkumpul} baris", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
+                    # Menampilkan informasi ritme sirkadian di layar
+                    status_waktu = f"Menuju Tidur: {diff_mins} mnt" if diff_mins >= 0 else f"Lewat Tidur: {abs(diff_mins)} mnt"
+                    cv2.putText(frame, f"Total Data: {data_terkumpul} | {status_waktu}", (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,255,0), 2)
                     cv2.putText(frame, f"Tekan '1' (Ngantuk) | '0' (Sadar) | 'ESC' (Keluar)", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
 
         cv2.putText(frame, env_status, (10, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
